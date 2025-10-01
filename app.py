@@ -1,4 +1,3 @@
-# streamlit_app/app.py
 import streamlit as st
 from openai import OpenAI
 
@@ -16,7 +15,7 @@ from features.chat import render_chat
 from ui.components import render_linkedin_button
 
 st.set_page_config(
-    page_title="Get Better at Flatter Chatbot - LinkedIn",
+    page_title="Get Better at Flatter - LinkedIn",
     page_icon="💬",
     layout="centered",
 )
@@ -89,17 +88,10 @@ if not st.session_state.get("li_authed"):
     st.write("")  # spacer
     left, center, right = st.columns([1, 2, 1])
     with center:
-        # Build an auth URL for this render (same-tab redirect handled below)
         state_token = make_signed_state(cfg.app_state_secret)
         auth_url = build_linkedin_auth_url(
             cfg.li_client_id, cfg.li_redirect_uri, cfg.oidc_scope, state_token
         )
-
-        # Render the button; on click, redirect SAME TAB using a meta refresh
-        if render_linkedin_button():
-            st.markdown(
-                f"<meta http-equiv='refresh' content='0; url={auth_url}'>",
-                unsafe_allow_html=True,
-            )
+        render_linkedin_button(auth_url)
 else:
     render_chat(client, cfg.model, cfg.vector_store_id)

@@ -1,5 +1,5 @@
-# streamlit_app/core/utils.py
-import json, re
+import json
+import re
 
 def stringify_locale(loc) -> str:
     if isinstance(loc, dict):
@@ -21,7 +21,8 @@ def coerce_cell(v):
 def build_transcript(history):
     lines = []
     for m in history:
-        if "plot" in m: lines.append("Assistant: [chart]")
+        if "plot" in m:
+            lines.append("Assistant: [chart]")
         else:
             speaker = "User" if m["role"] == "user" else "Assistant"
             lines.append(f"{speaker}: {m['content']}")

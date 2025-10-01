@@ -1,5 +1,10 @@
 import re
 import os
+import json
+import time
+import base64
+import hmac
+import hashlib
 import requests
 import urllib.parse as urlparse
 import secrets as pysecrets
@@ -29,21 +34,19 @@ LINKEDIN_CLIENT_ID = LINKEDIN.get("client_id")
 LINKEDIN_CLIENT_SECRET = LINKEDIN.get("client_secret")
 LINKEDIN_REDIRECT_URI = LINKEDIN.get("redirect_uri")
 
+# App state signing (use your own secret if set)
+APP_STATE_SECRET = st.secrets.get("APP_STATE_SECRET", LINKEDIN_CLIENT_SECRET or "dev-secret")
+
 # Google Sheets
 GS_CONF = st.secrets.get("google_sheets", {})
 SA_INFO = st.secrets.get("gcp_service_account")
 
 if not API_KEY:
-    st.error("Missing OPENAI_API_KEY in .streamlit/secrets.toml")
-    st.stop()
-
+    st.error("Missing OPENAI_API_KEY in .streamlit/secrets.toml"); st.stop()
 if not VECTOR_STORE_ID:
-    st.error("Missing OPENAI_VECTOR_STORE_ID in .streamlit/secrets.toml (required for file_search).")
-    st.stop()
-
+    st.error("Missing OPENAI_VECTOR_STORE_ID in .streamlit/secrets.toml (required for file_search)."); st.stop()
 if not (LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET and LINKEDIN_REDIRECT_URI):
-    st.error("LinkedIn OIDC not configured. Add [linkedin] client_id, client_secret, redirect_uri to secrets.toml.")
-    st.stop()
+    st.error("LinkedIn OIDC not configured. Add [linkedin] client_id, client_secret, redirect_uri to secrets.toml."); st.stop()
 
 client = OpenAI(api_key=API_KEY)
 st.title("Get Better at Flatter Chatbot")
@@ -89,6 +92,34 @@ def fetch_userinfo(access_token: str) -> dict | None:
     except Exception as e:
         st.error(f"Fetching LinkedIn userinfo failed: {e}")
         return None
+
+# ---- Signed state (stateless CSRF protection) ----
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+def make_signed_state(ttl_seconds: int = 900) -> str:
+    payload = {"ts": int(time.time()), "nonce": pysecrets.token_urlsafe(8)}
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    sig = hmac.new(APP_STATE_SECRET.encode(), raw, hashlib.sha256).digest()
+    return f"{_b64url(raw)}.{_b64url(sig)}"
+
+def verify_signed_state(state: str, max_age_seconds: int = 900) -> bool:
+    try:
+        p_b64, s_b64 = state.split(".", 1)
+        raw = _b64url_decode(p_b64)
+        sig = _b64url_decode(s_b64)
+        expected = hmac.new(APP_STATE_SECRET.encode(), raw, hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, expected):
+            return False
+        payload = json.loads(raw.decode())
+        ts = int(payload.get("ts", 0))
+        return abs(int(time.time()) - ts) <= max_age_seconds
+    except Exception:
+        return False
 
 # ================= Google Sheets helpers =================
 @st.cache_resource(show_spinner=False)
@@ -149,7 +180,6 @@ def persist_signin_row(userinfo: dict):
         st.warning(f"Could not write to Google Sheets: {e}")
 
 # ================= Auth state & callback handling =================
-st.session_state.setdefault("oauth_state", pysecrets.token_urlsafe(16))
 st.session_state.setdefault("li_authed", False)
 st.session_state.setdefault("li_profile", None)
 st.session_state.setdefault("li_access_token", None)
@@ -173,9 +203,9 @@ except Exception:
     def _clear_qp():
         st.experimental_set_query_params()
 
-# Handle OAuth callback
+# Handle OAuth callback (verify signed state instead of session-stored value)
 if qp_code and not st.session_state["li_authed"]:
-    if qp_state and qp_state == st.session_state["oauth_state"]:
+    if qp_state and verify_signed_state(qp_state, max_age_seconds=900):
         try:
             access_token, id_token = exchange_code_for_tokens(qp_code)
             if access_token:
@@ -218,8 +248,7 @@ if st.session_state.get("li_authed") and st.session_state.get("li_profile"):
 def build_transcript(history):
     lines = []
     for m in history:
-        if "plot" in m:
-            lines.append("Assistant: [chart]")
+        if "plot" in m: lines.append("Assistant: [chart]")
         else:
             speaker = "User" if m["role"] == "user" else "Assistant"
             lines.append(f"{speaker}: {m['content']}")
@@ -238,8 +267,7 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         if "plot" in m:
             st.plotly_chart(m["plot"], theme="streamlit", use_container_width=True)
-            if m.get("caption"):
-                st.caption(m["caption"])
+            if m.get("caption"): st.caption(m["caption"])
         else:
             st.markdown(m["content"])
 
@@ -250,34 +278,26 @@ user_input = st.chat_input(
     disabled=chat_disabled
 )
 
-# ===== Centered LinkedIn login button in #0077B5 (no message) =====
+# ===== Centered LinkedIn login button in #0077B5 (no sidebar, no message) =====
 if chat_disabled:
     st.write("")  # spacer
     left, center, right = st.columns([1, 2, 1])
     with center:
-        auth_url = build_linkedin_auth_url(st.session_state["oauth_state"], scope=OIDC_SCOPE)
-
-        # Custom-styled anchor as a button (LinkedIn blue #0077B5)
+        # fresh signed state each render; no reliance on session for CSRF
+        state_token = make_signed_state()
+        auth_url = build_linkedin_auth_url(state_token, scope=OIDC_SCOPE)
         st.markdown(
             f"""
             <style>
             .li-btn {{
-                display: inline-flex;
-                align-items: center;
-                gap: 10px;
-                padding: 12px 18px;
-                border-radius: 10px;
-                background: #0077B5;
-                color: #ffffff !important;
-                text-decoration: none;
-                font-weight: 700;
-                font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+                display: inline-flex; align-items: center; gap: 10px;
+                padding: 12px 18px; border-radius: 10px;
+                background: #0077B5; color: #ffffff !important; text-decoration: none;
+                font-weight: 700; font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
                 box-shadow: 0 2px 8px rgba(0,0,0,0.15);
             }}
             .li-btn:hover {{ filter: brightness(0.95); }}
-            .li-icon {{
-                width: 18px; height: 18px; display: inline-block;
-            }}
+            .li-icon {{ width: 18px; height: 18px; display: inline-block; }}
             </style>
             <a class="li-btn" href="{auth_url}">
                 <svg class="li-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -329,10 +349,7 @@ if user_input and not chat_disabled:
         "model": MODEL,
         "input": transcript,
         "instructions": instructions,
-        "tools": [{
-            "type": "file_search",
-            "vector_store_ids": [VECTOR_STORE_ID],
-        }],
+        "tools": [{"type": "file_search","vector_store_ids": [VECTOR_STORE_ID]}],
     }
 
     try:
@@ -346,8 +363,7 @@ if user_input and not chat_disabled:
         code = extract_python_code(assistant_text)
         if code:
             explanation = remove_python_blocks(assistant_text)
-            if explanation:
-                st.markdown(explanation)
+            if explanation: st.markdown(explanation)
             try:
                 safe_code = code.replace("fig.show()", "").strip()
                 exec_globals = {"st": st}

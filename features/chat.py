@@ -1,4 +1,3 @@
-# streamlit_app/features/chat.py
 import streamlit as st
 from core.utils import build_transcript, extract_python_code, remove_python_blocks
 
@@ -12,7 +11,8 @@ def render_chat(client, model: str, vector_store_id: str):
         with st.chat_message(m["role"]):
             if "plot" in m:
                 st.plotly_chart(m["plot"], theme="streamlit", use_container_width=True)
-                if m.get("caption"): st.caption(m["caption"])
+                if m.get("caption"):
+                    st.caption(m["caption"])
             else:
                 st.markdown(m["content"])
 
@@ -23,7 +23,8 @@ def render_chat(client, model: str, vector_store_id: str):
 
     # show user message
     st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"): st.markdown(user_input)
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
     transcript = build_transcript(st.session_state.messages)
 
@@ -36,6 +37,7 @@ def render_chat(client, model: str, vector_store_id: str):
         "\"I don't know based on the provided knowledge base.\" "
         "Do not rely on outside or general knowledge. Do not fabricate facts."
     )
+
     plotting_guidance = (
         "If the user asks to visualize, chart, graph, plot, or show a figure, produce Plotly-only Python code. "
         "Return the code wrapped in a single fenced block exactly like:\n"
@@ -50,6 +52,7 @@ def render_chat(client, model: str, vector_store_id: str):
         "- Do NOT call fig.show().\n"
         "- You may include a brief natural-language explanation before the code block."
     )
+
     instructions = f"{base_instructions}\n\n{plotting_guidance}"
 
     req = {
@@ -70,7 +73,8 @@ def render_chat(client, model: str, vector_store_id: str):
         code = extract_python_code(assistant_text)
         if code:
             explanation = remove_python_blocks(assistant_text)
-            if explanation: st.markdown(explanation)
+            if explanation:
+                st.markdown(explanation)
             try:
                 safe_code = code.replace("fig.show()", "").strip()
                 exec_globals = {"st": st}

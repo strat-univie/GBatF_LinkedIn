@@ -1,3 +1,4 @@
+# streamlit_app/core/sheets.py
 from datetime import datetime
 import streamlit as st
 
@@ -11,21 +12,35 @@ except Exception:
 from .utils import coerce_cell, stringify_locale
 
 @st.cache_resource(show_spinner=False)
-def _get_ws(sheet_id: str | None, worksheet: str, service_account_info: dict | None):
+def _get_ws(sheet_id: str | None, worksheet: str, _service_account_info):
+    """
+    NOTE:
+    - Leading underscore on `_service_account_info` tells Streamlit not to hash it
+      for the cache key (fixes 'Cannot hash argument' error).
+    """
     if gspread is None or Credentials is None:
         return None
-    if not (sheet_id and service_account_info):
+    if not (sheet_id and _service_account_info):
         return None
+
+    # Convert AttrDict -> plain dict (defensive; works for normal dicts too)
+    try:
+        service_account_info = dict(_service_account_info)
+    except Exception:
+        service_account_info = _service_account_info
+
     scope = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(service_account_info, scopes=scope)
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
+
     try:
         ws = sh.worksheet(worksheet)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=worksheet, rows=1000, cols=20)
         ws.append_row(["timestamp_iso","sub","name","given_name","family_name","email","email_verified","locale"])
-    # Ensure header exists
+
+    # Ensure header exists (don’t overwrite existing data)
     try:
         hdr = [h.strip().lower() for h in (ws.row_values(1) or [])]
         want = ["timestamp_iso","sub","name","given_name","family_name","email","email_verified","locale"]
@@ -33,6 +48,7 @@ def _get_ws(sheet_id: str | None, worksheet: str, service_account_info: dict | N
             ws.insert_row(["timestamp_iso","sub","name","given_name","family_name","email","email_verified","locale"], 1)
     except Exception:
         pass
+
     return ws
 
 def persist_signin_row(userinfo: dict, cfg) -> None:

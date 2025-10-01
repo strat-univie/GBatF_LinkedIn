@@ -33,6 +33,7 @@ LINKEDIN = st.secrets.get("linkedin", {})
 LINKEDIN_CLIENT_ID = LINKEDIN.get("client_id")
 LINKEDIN_CLIENT_SECRET = LINKEDIN.get("client_secret")
 LINKEDIN_REDIRECT_URI = LINKEDIN.get("redirect_uri")
+OIDC_SCOPE = "openid profile email"
 
 # App state signing (use your own secret if set)
 APP_STATE_SECRET = st.secrets.get("APP_STATE_SECRET", LINKEDIN_CLIENT_SECRET or "dev-secret")
@@ -41,6 +42,7 @@ APP_STATE_SECRET = st.secrets.get("APP_STATE_SECRET", LINKEDIN_CLIENT_SECRET or 
 GS_CONF = st.secrets.get("google_sheets", {})
 SA_INFO = st.secrets.get("gcp_service_account")
 
+# --- Required secrets checks ---
 if not API_KEY:
     st.error("Missing OPENAI_API_KEY in .streamlit/secrets.toml"); st.stop()
 if not VECTOR_STORE_ID:
@@ -59,7 +61,6 @@ if "messages" not in st.session_state:
 AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
-OIDC_SCOPE = "openid profile email"
 
 def build_linkedin_auth_url(state: str, scope: str = OIDC_SCOPE) -> str:
     params = {
@@ -160,22 +161,47 @@ def _get_gsheet_worksheet():
         st.warning(f"Google Sheets setup issue: {e}")
         return None
 
+# --- Helpers to normalize values for Sheets ---
+def _stringify_locale(loc) -> str:
+    """LinkedIn OIDC 'locale' can be an object; turn it into 'en-US' or a simple string."""
+    if isinstance(loc, dict):
+        lang = (loc.get("language") or "").strip()
+        country = (loc.get("country") or "").strip()
+        if lang and country:
+            return f"{lang}-{country}"
+        return lang or country or ""
+    if isinstance(loc, str):
+        return loc
+    return ""
+
+def _coerce_cell(v):
+    """Ensure values are sheet-friendly primitives (string/number/bool/None)."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, dict):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, list):
+        return ", ".join(map(str, v))
+    return str(v)
+
 def persist_signin_row(userinfo: dict):
     ws = _get_gsheet_worksheet()
     if ws is None:
         return
     try:
-        ws.append_row([
+        locale_str = _stringify_locale(userinfo.get("locale"))
+        row = [
             datetime.utcnow().isoformat(),
-            userinfo.get("sub"),
-            userinfo.get("name"),
-            userinfo.get("given_name"),
-            userinfo.get("family_name"),
-            userinfo.get("email"),
-            userinfo.get("email_verified"),
-            userinfo.get("picture"),
-            userinfo.get("locale"),
-        ], value_input_option="USER_ENTERED")
+            _coerce_cell(userinfo.get("sub")),
+            _coerce_cell(userinfo.get("name")),
+            _coerce_cell(userinfo.get("given_name")),
+            _coerce_cell(userinfo.get("family_name")),
+            _coerce_cell(userinfo.get("email")),
+            _coerce_cell(userinfo.get("email_verified")),
+            _coerce_cell(userinfo.get("picture")),
+            locale_str,
+        ]
+        ws.append_row(row, value_input_option="USER_ENTERED")
     except Exception as e:
         st.warning(f"Could not write to Google Sheets: {e}")
 
@@ -203,13 +229,14 @@ except Exception:
     def _clear_qp():
         st.experimental_set_query_params()
 
-# Handle OAuth callback (verify signed state instead of session-stored value)
+# Handle OAuth callback (verify signed state)
 if qp_code and not st.session_state["li_authed"]:
     if qp_state and verify_signed_state(qp_state, max_age_seconds=900):
         try:
             access_token, id_token = exchange_code_for_tokens(qp_code)
             if access_token:
                 ui = fetch_userinfo(access_token) or {}
+                locale_str = _stringify_locale(ui.get("locale"))
                 st.session_state["li_authed"] = True
                 st.session_state["li_access_token"] = access_token
                 st.session_state["li_id_token"] = id_token
@@ -221,11 +248,11 @@ if qp_code and not st.session_state["li_authed"]:
                     "email": ui.get("email"),
                     "email_verified": ui.get("email_verified"),
                     "picture": ui.get("picture"),
-                    "locale": ui.get("locale"),
+                    "locale": locale_str,  # flattened for display
                 }
                 uid = ui.get("sub")
                 if uid and uid not in st.session_state["logged_ids_this_session"]:
-                    persist_signin_row(ui)
+                    persist_signin_row(ui)  # writes with normalized types
                     st.session_state["logged_ids_this_session"].add(uid)
         except Exception as e:
             st.error(f"LinkedIn sign-in failed: {e}")
@@ -244,11 +271,12 @@ if st.session_state.get("li_authed") and st.session_state.get("li_profile"):
                 st.session_state[k] = None if k == "li_profile" else False
             st.rerun()
 
-# ================= Utilities (unchanged) =================
+# ================= Utilities for chat (unchanged) =================
 def build_transcript(history):
     lines = []
     for m in history:
-        if "plot" in m: lines.append("Assistant: [chart]")
+        if "plot" in m:
+            lines.append("Assistant: [chart]")
         else:
             speaker = "User" if m["role"] == "user" else "Assistant"
             lines.append(f"{speaker}: {m['content']}")
@@ -267,7 +295,8 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         if "plot" in m:
             st.plotly_chart(m["plot"], theme="streamlit", use_container_width=True)
-            if m.get("caption"): st.caption(m["caption"])
+            if m.get("caption"):
+                st.caption(m["caption"])
         else:
             st.markdown(m["content"])
 
@@ -316,6 +345,7 @@ if user_input and not chat_disabled:
 
     transcript = build_transcript(st.session_state.messages)
 
+    # --- Instructions for the model ---
     base_instructions = (
         "You are a careful, concise assistant providing individual information on Prof. Markus Reitzig's Book 'Get Better at Flatter'. "
         "Use ONLY the information retrieved from the file_search tool. "
@@ -349,9 +379,10 @@ if user_input and not chat_disabled:
         "model": MODEL,
         "input": transcript,
         "instructions": instructions,
-        "tools": [{"type": "file_search","vector_store_ids": [VECTOR_STORE_ID]}],
+        "tools": [{"type": "file_search", "vector_store_ids": [VECTOR_STORE_ID]}],
     }
 
+    # Call the API
     try:
         resp = client.responses.create(**req)
         assistant_text = resp.output_text or ""
@@ -359,11 +390,13 @@ if user_input and not chat_disabled:
         assistant_text = f"Sorry, there was an error calling the API:\n\n```\n{e}\n```"
         resp = None
 
+    # Assistant bubble
     with st.chat_message("assistant"):
         code = extract_python_code(assistant_text)
         if code:
             explanation = remove_python_blocks(assistant_text)
-            if explanation: st.markdown(explanation)
+            if explanation:
+                st.markdown(explanation)
             try:
                 safe_code = code.replace("fig.show()", "").strip()
                 exec_globals = {"st": st}
@@ -372,13 +405,13 @@ if user_input and not chat_disabled:
                 fig = exec_locals.get("fig") or exec_globals.get("fig")
                 if fig is not None and hasattr(fig, "to_dict"):
                     st.plotly_chart(fig, theme="streamlit", use_container_width=True)
-                    st.session_state.messages.append({"role": "assistant","plot": fig,"caption": None})
+                    st.session_state.messages.append({"role": "assistant", "plot": fig, "caption": None})
                 else:
                     st.info("I generated code but couldn't detect a Plotly figure named 'fig'.")
-                    st.session_state.messages.append({"role": "assistant","content": "Chart generation attempted, but no figure was detected."})
+                    st.session_state.messages.append({"role": "assistant", "content": "Chart generation attempted, but no figure was detected."})
             except Exception as ex:
                 st.error(f"Plot execution error:\n{ex}")
-                st.session_state.messages.append({"role": "assistant","content": f"Plot execution error: {ex}"})
+                st.session_state.messages.append({"role": "assistant", "content": f"Plot execution error: {ex}"})
         else:
             st.markdown(assistant_text)
             st.session_state.messages.append({"role": "assistant", "content": assistant_text})

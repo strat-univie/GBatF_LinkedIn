@@ -16,7 +16,7 @@ except Exception:
     gspread = None
     Credentials = None
 
-st.set_page_config(page_title="Chat (Responses API + Vector Store + Plotly)", page_icon="💬", layout="centered")
+st.set_page_config(page_title="Chat (Get Batter at Flatter - LinkedIn)", page_icon="💬", layout="centered")
 
 # --- Secrets / Config ---
 API_KEY = st.secrets.get("OPENAI_API_KEY")

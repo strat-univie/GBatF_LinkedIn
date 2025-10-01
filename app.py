@@ -144,15 +144,15 @@ def _get_gsheet_worksheet():
             ws = sh.add_worksheet(title=ws_title, rows=1000, cols=20)
             ws.append_row([
                 "timestamp_iso", "sub", "name", "given_name", "family_name",
-                "email", "email_verified", "picture", "locale"
+                "email", "email_verified", "locale"
             ])
         try:
             hdr = ws.row_values(1)
-            want = ["timestamp_iso","sub","name","given_name","family_name","email","email_verified","picture","locale"]
+            want = ["timestamp_iso","sub","name","given_name","family_name","email","email_verified","locale"]
             if [h.strip().lower() for h in hdr] != want:
                 ws.insert_row([
                     "timestamp_iso", "sub", "name", "given_name", "family_name",
-                    "email", "email_verified", "picture", "locale"
+                    "email", "email_verified", "locale"
                 ], 1)
         except Exception:
             pass
@@ -198,7 +198,6 @@ def persist_signin_row(userinfo: dict):
             _coerce_cell(userinfo.get("family_name")),
             _coerce_cell(userinfo.get("email")),
             _coerce_cell(userinfo.get("email_verified")),
-            _coerce_cell(userinfo.get("picture")),
             locale_str,
         ]
         ws.append_row(row, value_input_option="USER_ENTERED")
@@ -247,7 +246,6 @@ if qp_code and not st.session_state["li_authed"]:
                     "full_name": ui.get("name"),
                     "email": ui.get("email"),
                     "email_verified": ui.get("email_verified"),
-                    "picture": ui.get("picture"),
                     "locale": locale_str,  # flattened for display
                 }
                 uid = ui.get("sub")
@@ -261,15 +259,6 @@ if qp_code and not st.session_state["li_authed"]:
     else:
         st.error("CSRF state mismatch. Please try signing in again.")
         _clear_qp()
-
-# ================= Optional: small sign-out in top-right when logged in =================
-if st.session_state.get("li_authed") and st.session_state.get("li_profile"):
-    c1, c2 = st.columns([6, 1])
-    with c2:
-        if st.button("Sign out"):
-            for k in ["li_authed","li_profile","li_access_token","li_id_token"]:
-                st.session_state[k] = None if k == "li_profile" else False
-            st.rerun()
 
 # ================= Utilities for chat (unchanged) =================
 def build_transcript(history):
@@ -312,7 +301,6 @@ if chat_disabled:
     st.write("")  # spacer
     left, center, right = st.columns([1, 2, 1])
     with center:
-        # fresh signed state each render; no reliance on session for CSRF
         state_token = make_signed_state()
         auth_url = build_linkedin_auth_url(state_token, scope=OIDC_SCOPE)
         st.markdown(

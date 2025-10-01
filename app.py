@@ -16,7 +16,7 @@ from features.chat import render_chat
 from ui.components import render_linkedin_button
 
 st.set_page_config(
-    page_title="Get Better at Flatter - LinkedIn",
+    page_title="Get Better at Flatter Chatbot - LinkedIn",
     page_icon="💬",
     layout="centered",
 )
